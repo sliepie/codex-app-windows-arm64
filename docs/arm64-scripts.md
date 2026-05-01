@@ -45,7 +45,7 @@ Requirements:
 - Build and sign an MSIX package from the converted output with `winapp`; do not register the converted output directory directly.
 - Preserve the Store Package identity version exactly in the Converted App manifest.
 - Create or reuse a `winapp` development signing certificate matching the Converted App publisher.
-- Run `winapp cert install` only when `-TrustSigningCertificate` is supplied, and fall back to current-user certificate trust when machine-level trust requires admin.
+- Run `winapp cert install` only when `-TrustSigningCertificate` is supplied, and open a visible elevated PowerShell window when machine-level certificate trust needs admin.
 - Install the packaged Converted App under a distinct dev identity after the installed Store Package has been removed.
 - Install the packaged Converted App for the current user only.
 - Keep the visible app name as Codex.

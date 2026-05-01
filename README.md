@@ -42,7 +42,7 @@ The script:
 - reuses the cached ARM64 Electron runtime when the cached zip matches the Store app's Electron version
 - removes the Store app after snapshot/conversion so duplicate Codex apps are not left installed
 - builds and signs a local MSIX package with `winapp`, then installs it for the current user
-- runs `winapp cert install` for the local signing certificate only when `-TrustSigningCertificate` is supplied, falling back to current-user trust if machine-level trust needs admin
+- runs `winapp cert install` for the local signing certificate only when `-TrustSigningCertificate` is supplied, opening a visible elevated PowerShell window when admin is needed
 - keeps conversion artifacts under `.scratch\codex-arm64-conversion`
 - keeps the generated package under `.scratch\codex-arm64-conversion\package`
 

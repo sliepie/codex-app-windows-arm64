@@ -73,7 +73,7 @@ The exact four-part package identity version copied from the Store Package manif
 _Avoid_: generated dev version, semantic app version
 
 **Signing Certificate Trust**:
-The explicit `-TrustSigningCertificate` choice that runs `winapp cert install` for the local package-signing certificate, falling back to current-user trust when machine-level trust is not available.
+The explicit `-TrustSigningCertificate` choice that runs `winapp cert install` for the local package-signing certificate, using a visible elevated PowerShell window when machine-level trust requires admin.
 _Avoid_: implicit trust, hidden certificate install
 
 **Conversion Artifacts**:

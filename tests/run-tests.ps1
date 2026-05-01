@@ -201,7 +201,11 @@ Invoke-Test "conversion installs packaged app instead of scratch registration" {
     }
 
     if ($scriptText -notmatch [regex]::Escape("Cert:\CurrentUser\Root")) {
-        throw "Expected conversion to fall back to current-user certificate trust when machine-level trust is unavailable."
+        throw "Expected conversion to keep a current-user certificate trust fallback when elevated trust is unavailable."
+    }
+
+    if ($scriptText -notmatch "Start-Process[\s\S]*-Verb RunAs") {
+        throw "Expected conversion to launch a visible elevated PowerShell window when certificate trust needs admin."
     }
 
     if ($scriptText -notmatch [regex]::Escape("-TrustSigningCertificate")) {

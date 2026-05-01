@@ -719,6 +719,62 @@ function Install-ConvertedApp {
     Add-AppxPackage -Path $PackagePath
 }
 
+function Invoke-ElevatedPackageSigningCertificateInstall {
+    param(
+        [Parameter(Mandatory)][string] $CertificatePath,
+        [Parameter(Mandatory)][string] $CertificatePassword
+    )
+
+    $powerShellCommand = Get-Command "pwsh" -ErrorAction SilentlyContinue
+    if ($null -eq $powerShellCommand) {
+        $powerShellCommand = Get-Command "powershell.exe" -ErrorAction Stop
+    }
+
+    $escapedCertificatePath = $CertificatePath.Replace("'", "''")
+    $escapedCertificatePassword = $CertificatePassword.Replace("'", "''")
+    $command = @"
+`$ErrorActionPreference = 'Stop'
+Write-Host 'Installing Codex ARM64 package signing certificate with winapp.'
+& winapp cert install '$escapedCertificatePath' --password '$escapedCertificatePassword'
+if (`$LASTEXITCODE -ne 0) {
+    exit `$LASTEXITCODE
+}
+Write-Host 'Certificate install complete. Closing this elevated window shortly.'
+Start-Sleep -Seconds 3
+"@
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $process = Start-Process `
+        -FilePath $powerShellCommand.Source `
+        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encodedCommand) `
+        -Verb RunAs `
+        -Wait `
+        -PassThru
+
+    if ($process.ExitCode -ne 0) {
+        throw "Elevated winapp cert install failed with exit code $($process.ExitCode)."
+    }
+}
+
+function Install-PackageSigningCertificateForCurrentUser {
+    param([Parameter(Mandatory)][string] $CertificatePath)
+
+    $publicCertificatePath = [IO.Path]::ChangeExtension($CertificatePath, ".cer")
+    if (-not (Test-Path -LiteralPath $publicCertificatePath -PathType Leaf)) {
+        throw "Current-user certificate trust failed because $publicCertificatePath was not found."
+    }
+
+    foreach ($storeLocation in @("Cert:\CurrentUser\TrustedPeople", "Cert:\CurrentUser\Root")) {
+        $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($publicCertificatePath)
+        $existingCertificate = Get-ChildItem -LiteralPath $storeLocation |
+            Where-Object { $_.Thumbprint -eq $certificate.Thumbprint } |
+            Select-Object -First 1
+
+        if ($null -eq $existingCertificate) {
+            Import-Certificate -FilePath $publicCertificatePath -CertStoreLocation $storeLocation | Out-Null
+        }
+    }
+}
+
 function Install-PackageSigningCertificate {
     param(
         [Parameter(Mandatory)][string] $CertificatePath,
@@ -746,21 +802,13 @@ function Install-PackageSigningCertificate {
         throw "winapp cert install failed while trusting the package signing certificate. $($install.Output)"
     }
 
-    Write-Host "winapp cert install requires administrator access; trusting certificate for current user instead."
-    $publicCertificatePath = [IO.Path]::ChangeExtension($CertificatePath, ".cer")
-    if (-not (Test-Path -LiteralPath $publicCertificatePath -PathType Leaf)) {
-        throw "Current-user certificate trust failed because $publicCertificatePath was not found. $($install.Output)"
+    Write-Host "winapp cert install requires administrator access; opening a visible elevated PowerShell window."
+    try {
+        Invoke-ElevatedPackageSigningCertificateInstall -CertificatePath $CertificatePath -CertificatePassword $CertificatePassword
     }
-
-    foreach ($storeLocation in @("Cert:\CurrentUser\TrustedPeople", "Cert:\CurrentUser\Root")) {
-        $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($publicCertificatePath)
-        $existingCertificate = Get-ChildItem -LiteralPath $storeLocation |
-            Where-Object { $_.Thumbprint -eq $certificate.Thumbprint } |
-            Select-Object -First 1
-
-        if ($null -eq $existingCertificate) {
-            Import-Certificate -FilePath $publicCertificatePath -CertStoreLocation $storeLocation | Out-Null
-        }
+    catch {
+        Write-Host "Elevated certificate install did not complete; trusting certificate for current user instead."
+        Install-PackageSigningCertificateForCurrentUser -CertificatePath $CertificatePath
     }
 }
 
