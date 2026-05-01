@@ -12,7 +12,7 @@ The installed Codex Microsoft Store package is x64 on this ARM64 Windows machine
 ## Consequences
 
 - `setup-codex-arm64-backend.ps1` owns the `CODEX_CLI_PATH` backend override.
-- `convert-codex-store-app-arm64.ps1` owns temporary Store install snapshot conversion to an unpacked ARM64 app.
+- `convert-codex-store-app-arm64.ps1` owns temporary Store install snapshot conversion to a packaged ARM64 app.
 - Detailed script behavior lives in `docs/arm64-scripts.md`; this ADR records why the split exists.
 
 ## Update: Store install snapshot
@@ -21,6 +21,6 @@ The installed Codex Microsoft Store package is x64 on this ARM64 Windows machine
 
 The conversion script therefore installs the Codex Store Package when it is missing. If the Store Package already exists, the script checks `winget upgrade` first and updates only when Store reports an available upgrade. It then copies the installed package to a snapshot outside `WindowsApps`, removes the current-user Store Package, and converts the snapshot. If a Store Package already exists at startup, the script prints a replacement banner before making changes so the user knows the Store app will be replaced by the Converted App.
 
-Before developer-mode registration, the script removes Store signature/origin artifacts from the snapshot. Windows rejects an unpacked dev registration when copied Store origin metadata is left in place.
+Before packaging, the script removes Store signature/origin artifacts from the snapshot. Windows rejects a converted dev package when copied Store origin metadata is left in place.
 
-When the existing Converted App already matches the current Store Package version and Store reports no upgrade, the script skips snapshot, native module refresh, and registration. It only removes the current-user Store Package so the user is not left with two Codex apps.
+When the existing packaged Converted App already matches the current Store Package version and Store reports no upgrade, the script skips snapshot, native module refresh, and package installation. It only removes the current-user Store Package so the user is not left with two Codex apps.
