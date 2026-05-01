@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string] $OutputRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) ".scratch\codex-arm64-conversion")
+    [string] $OutputRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) ".scratch\codex-arm64-conversion"),
+    [switch] $TrustSigningCertificate
 )
 
 Set-StrictMode -Version Latest
@@ -219,7 +220,7 @@ function New-StorePackageSnapshot {
 function Remove-CodexStorePackage {
     param([Parameter(Mandatory)] $Package)
 
-    Write-Host "Removing current-user Codex Store Package before registering Converted App."
+    Write-Host "Removing current-user Codex Store Package before installing Converted App."
     Remove-AppxPackage -Package $Package.PackageFullName -ErrorAction Stop
 }
 
@@ -245,6 +246,13 @@ function Test-ConvertedPackageMatchesStorePackage {
     )
 
     return ([version] $ConvertedPackage.Version) -eq ([version] $StorePackage.Version)
+}
+
+function Test-ConvertedPackageIsInstalledPackage {
+    param([Parameter(Mandatory)] $ConvertedPackage)
+
+    return (-not [string]::IsNullOrWhiteSpace($ConvertedPackage.InstallLocation)) -and
+        ($ConvertedPackage.InstallLocation -match "\\WindowsApps\\")
 }
 
 function Get-ElectronVersionFromAsar {
@@ -287,6 +295,43 @@ function Get-ElectronVersion {
     return Get-ElectronVersionFromAsar -AsarPath $asarPath -WorkDirectory $WorkDirectory
 }
 
+function Test-ElectronRuntimeCache {
+    param(
+        [Parameter(Mandatory)][string] $Version,
+        [Parameter(Mandatory)][string] $ZipPath
+    )
+
+    if (-not (Test-Path -LiteralPath $ZipPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $archive = [IO.Compression.ZipFile]::OpenRead($ZipPath)
+        try {
+            $versionEntry = $archive.GetEntry("version")
+            if ($null -eq $versionEntry) {
+                return $false
+            }
+
+            $reader = [IO.StreamReader]::new($versionEntry.Open())
+            try {
+                $cachedVersion = $reader.ReadToEnd().Trim()
+            }
+            finally {
+                $reader.Dispose()
+            }
+
+            return $cachedVersion -eq $Version
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    catch {
+        return $false
+    }
+}
+
 function Download-ElectronRuntime {
     param(
         [Parameter(Mandatory)][string] $Version,
@@ -297,6 +342,24 @@ function Download-ElectronRuntime {
     $url = "https://github.com/electron/electron/releases/download/v$Version/electron-v$Version-win32-arm64.zip"
     Write-Host "Downloading Matching Electron Runtime: $url"
     Invoke-WebRequest -Uri $url -OutFile $DestinationPath
+}
+
+function Ensure-ElectronRuntime {
+    param(
+        [Parameter(Mandatory)][string] $Version,
+        [Parameter(Mandatory)][string] $DestinationPath
+    )
+
+    if (Test-ElectronRuntimeCache -Version $Version -ZipPath $DestinationPath) {
+        Write-Host "Using cached Matching Electron Runtime: $DestinationPath"
+        return
+    }
+
+    if (Test-Path -LiteralPath $DestinationPath -PathType Leaf) {
+        Write-Host "Cached Matching Electron Runtime does not match version $Version; downloading again."
+    }
+
+    Download-ElectronRuntime -Version $Version -DestinationPath $DestinationPath
 }
 
 function Copy-DirectoryContents {
@@ -650,10 +713,125 @@ function Remove-StoreOriginArtifacts {
     }
 }
 
-function Register-ConvertedApp {
-    param([Parameter(Mandatory)][string] $ManifestPath)
+function Install-ConvertedApp {
+    param([Parameter(Mandatory)][string] $PackagePath)
 
-    Add-AppxPackage -Register $ManifestPath
+    Add-AppxPackage -Path $PackagePath
+}
+
+function Install-PackageSigningCertificate {
+    param(
+        [Parameter(Mandatory)][string] $CertificatePath,
+        [Parameter(Mandatory)][string] $CertificatePassword,
+        [switch] $TrustRoot
+    )
+
+    if (-not $TrustRoot.IsPresent) {
+        throw "The Converted App package signing certificate must be trusted before install. Re-run with -TrustSigningCertificate to run winapp cert install for this self-signed certificate."
+    }
+
+    Write-Host "Installing package signing certificate with winapp."
+    $install = Invoke-External -FilePath "winapp" -Arguments @(
+        "cert",
+        "install",
+        $CertificatePath,
+        "--password", $CertificatePassword,
+        "--quiet"
+    )
+    if ($install.ExitCode -eq 0) {
+        return
+    }
+
+    if ($install.Output -notmatch "Access is denied") {
+        throw "winapp cert install failed while trusting the package signing certificate. $($install.Output)"
+    }
+
+    Write-Host "winapp cert install requires administrator access; trusting certificate for current user instead."
+    $publicCertificatePath = [IO.Path]::ChangeExtension($CertificatePath, ".cer")
+    if (-not (Test-Path -LiteralPath $publicCertificatePath -PathType Leaf)) {
+        throw "Current-user certificate trust failed because $publicCertificatePath was not found. $($install.Output)"
+    }
+
+    foreach ($storeLocation in @("Cert:\CurrentUser\TrustedPeople", "Cert:\CurrentUser\Root")) {
+        $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($publicCertificatePath)
+        $existingCertificate = Get-ChildItem -LiteralPath $storeLocation |
+            Where-Object { $_.Thumbprint -eq $certificate.Thumbprint } |
+            Select-Object -First 1
+
+        if ($null -eq $existingCertificate) {
+            Import-Certificate -FilePath $publicCertificatePath -CertStoreLocation $storeLocation | Out-Null
+        }
+    }
+}
+
+function New-PackageSigningCertificate {
+    param(
+        [Parameter(Mandatory)][string] $ManifestPath,
+        [Parameter(Mandatory)][string] $CertificatePath,
+        [Parameter(Mandatory)][string] $CertificatePassword
+    )
+
+    New-Item -ItemType Directory -Force (Split-Path -Parent $CertificatePath) | Out-Null
+
+    Write-Host "Creating or reusing winapp package signing certificate: $CertificatePath"
+    $cert = Invoke-External -FilePath "winapp" -Arguments @(
+        "cert",
+        "generate",
+        "--manifest", $ManifestPath,
+        "--output", $CertificatePath,
+        "--password", $CertificatePassword,
+        "--valid-days", "1825",
+        "--if-exists", "skip",
+        "--export-cer",
+        "--quiet"
+    )
+    if ($cert.ExitCode -ne 0) {
+        throw "winapp cert generate failed while preparing package signing certificate. $($cert.Output)"
+    }
+
+    $cerPath = [IO.Path]::ChangeExtension($CertificatePath, ".cer")
+    if (-not (Test-Path -LiteralPath $cerPath -PathType Leaf)) {
+        throw "winapp cert generate did not produce the expected public certificate at $cerPath."
+    }
+
+    return $cerPath
+}
+
+function New-PackagedConvertedApp {
+    param(
+        [Parameter(Mandatory)][string] $PackageDirectory,
+        [Parameter(Mandatory)][string] $PackagePath,
+        [Parameter(Mandatory)][string] $WorkDirectory,
+        [switch] $TrustSigningCertificate
+    )
+
+    New-Item -ItemType Directory -Force (Split-Path -Parent $PackagePath), $WorkDirectory | Out-Null
+    if (Test-Path -LiteralPath $PackagePath -PathType Leaf) {
+        Remove-Item -LiteralPath $PackagePath -Force
+    }
+
+    $manifestPath = Join-Path $PackageDirectory "AppxManifest.xml"
+    $certificatePath = Join-Path $WorkDirectory "codex-arm64-dev-signing.pfx"
+    $certificatePassword = "password"
+    New-PackageSigningCertificate -ManifestPath $manifestPath -CertificatePath $certificatePath -CertificatePassword $certificatePassword | Out-Null
+
+    Write-Host "Packaging and signing Converted App with winapp: $PackagePath"
+    $pack = Invoke-External -FilePath "winapp" -Arguments @(
+        "package",
+        $PackageDirectory,
+        "--manifest", $manifestPath,
+        "--output", $PackagePath,
+        "--cert", $certificatePath,
+        "--cert-password", $certificatePassword,
+        "--quiet"
+    )
+    if ($pack.ExitCode -ne 0) {
+        throw "winapp package failed while packaging Converted App. $($pack.Output)"
+    }
+
+    Install-PackageSigningCertificate -CertificatePath $certificatePath -CertificatePassword $certificatePassword -TrustRoot:$TrustSigningCertificate.IsPresent
+
+    return $PackagePath
 }
 
 try {
@@ -661,11 +839,13 @@ try {
     $snapshot = Join-Path $root "snapshot"
     $work = Join-Path $root "work"
     $converted = Join-Path $root "converted"
+    $packageOutput = Join-Path $root "package"
     $electronZip = Join-Path $root "electron\electron-arm64.zip"
+    $msixPackage = Join-Path $packageOutput "Codex-Arm64Dev.msix"
 
-    New-Item -ItemType Directory -Force $snapshot, $work, $converted | Out-Null
+    New-Item -ItemType Directory -Force $snapshot, $work, $converted, $packageOutput | Out-Null
 
-    Write-Host "Converting Codex Store product $ProductId to an unpacked ARM64 Converted App."
+    Write-Host "Converting Codex Store product $ProductId to a packaged ARM64 Converted App."
     $existingPackage = Get-CodexStorePackage
     $storePackageState = Ensure-CodexStorePackageCurrent -ExistingPackage $existingPackage
 
@@ -677,7 +857,8 @@ try {
     $existingConvertedPackage = Get-ExistingConvertedPackage
     if (($storePackageState.Action -eq "Current") -and
         ($null -ne $existingConvertedPackage) -and
-        (Test-ConvertedPackageMatchesStorePackage -ConvertedPackage $existingConvertedPackage -StorePackage $installedPackage)) {
+        (Test-ConvertedPackageMatchesStorePackage -ConvertedPackage $existingConvertedPackage -StorePackage $installedPackage) -and
+        (Test-ConvertedPackageIsInstalledPackage -ConvertedPackage $existingConvertedPackage)) {
         Write-Host "Converted App is already current at version $($existingConvertedPackage.Version); nothing to do."
         Write-Host "Removing current-user Codex Store Package so only the Converted App remains installed."
         Remove-CodexStorePackage -Package $installedPackage
@@ -688,11 +869,8 @@ try {
         Show-ReplacementBanner -Package $installedPackage
     }
 
-    $packageDir = New-StorePackageSnapshot -Package $installedPackage -SnapshotDirectory (Join-Path $snapshot "Codex")
-    Remove-CodexStorePackage -Package $installedPackage
-
     $convertedPackageDir = Join-Path $converted "Codex"
-    Remove-ExistingConvertedPackage
+    $packageDir = New-StorePackageSnapshot -Package $installedPackage -SnapshotDirectory (Join-Path $snapshot "Codex")
     if (Test-Path -LiteralPath $convertedPackageDir) {
         Remove-Item -LiteralPath $convertedPackageDir -Recurse -Force
     }
@@ -701,17 +879,22 @@ try {
     $electronVersion = Get-ElectronVersion -PackageDirectory $convertedPackageDir -WorkDirectory $work
     Write-Host "Electron version: $electronVersion"
 
-    Download-ElectronRuntime -Version $electronVersion -DestinationPath $electronZip
+    Ensure-ElectronRuntime -Version $electronVersion -DestinationPath $electronZip
     Replace-ElectronRuntime -PackageDirectory $convertedPackageDir -ElectronZipPath $electronZip -WorkDirectory $work
     Refresh-NativeModules -PackageDirectory $convertedPackageDir -ElectronVersion $electronVersion -WorkDirectory $work
 
     Remove-StoreOriginArtifacts -PackageDirectory $convertedPackageDir
-    $manifestPath = Update-AppManifest -PackageDirectory $convertedPackageDir
-    Write-Host "Registering Converted App for current-user with dev identity $DevIdentityName."
-    Register-ConvertedApp -ManifestPath $manifestPath
+    Update-AppManifest -PackageDirectory $convertedPackageDir | Out-Null
+    New-PackagedConvertedApp -PackageDirectory $convertedPackageDir -PackagePath $msixPackage -WorkDirectory $work -TrustSigningCertificate:$TrustSigningCertificate.IsPresent | Out-Null
 
-    Write-Host "Registration success."
+    Remove-ExistingConvertedPackage
+    Write-Host "Installing packaged Converted App for current-user with dev identity $DevIdentityName."
+    Install-ConvertedApp -PackagePath $msixPackage
+    Remove-CodexStorePackage -Package $installedPackage
+
+    Write-Host "Package install success."
     Write-Host "Converted App was not launched. Runtime verification is out of scope."
+    Write-Host "Converted App package: $msixPackage"
     Write-Host "Conversion Artifacts kept at: $root"
 }
 catch {

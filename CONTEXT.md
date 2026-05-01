@@ -10,7 +10,7 @@ _Avoid_: CLI, backend
 
 **Store Package**:
 The signed Microsoft Store installation of the Codex Desktop App under `WindowsApps`.
-_Avoid_: unpacked app, patched app
+_Avoid_: patched app
 
 **Temporary Store Install Snapshot**:
 A copy of the current-user Codex Store Package staged outside `WindowsApps` before conversion.
@@ -37,7 +37,7 @@ The heavier script that snapshots a current-user Store Package and converts the 
 _Avoid_: setup script, env override
 
 **Converted App**:
-The unpacked registered Codex Desktop App whose Electron runtime and native components are ARM64.
+The packaged Codex Desktop App whose Electron runtime and native components are ARM64.
 _Avoid_: Store Package, Backend Override
 
 **Dev Identity**:
@@ -57,15 +57,27 @@ The replacement or rebuild of Electron native Node modules for ARM64, including 
 _Avoid_: leaving x64 native modules in place
 
 **Store Origin Artifacts**:
-Signature and metadata files copied from the Store Package that must be removed before registering the unpacked Converted App.
-_Avoid_: Store-signed dev registration
+Signature and metadata files copied from the Store Package that must be removed before packaging the Converted App.
+_Avoid_: Store-signed dev package
 
 **Prerequisite Prompt**:
 The conversion stop point that lists missing build tools and lets the user install them through the script or resume after manual installation.
 _Avoid_: silent prerequisite installation, best-effort continuation
 
+**Converted App Package**:
+The signed MSIX package built from the converted output and installed for the current user.
+_Avoid_: unpacked app registration, scratch-launched app
+
+**Store Package Version**:
+The exact four-part package identity version copied from the Store Package manifest into the Converted App Package.
+_Avoid_: generated dev version, semantic app version
+
+**Signing Certificate Trust**:
+The explicit `-TrustSigningCertificate` choice that runs `winapp cert install` for the local package-signing certificate, falling back to current-user trust when machine-level trust is not available.
+_Avoid_: implicit trust, hidden certificate install
+
 **Conversion Artifacts**:
-The package snapshot, extracted files, logs, and converted output retained after conversion.
+The package snapshot, extracted files, generated package, logs, and converted output retained after conversion.
 _Avoid_: throwaway scratch, hidden temp output
 
 **Replacement Banner**:
@@ -73,7 +85,7 @@ The start-of-script message that warns when an existing Codex Store Package will
 _Avoid_: hidden uninstall, silent replacement
 
 **Registration Success**:
-The point where the Converted App has been registered for the current user.
+The point where the Converted App Package has been installed for the current user.
 _Avoid_: launch success, runtime smoke test
 
 **Out-of-Scope Verification**:
@@ -92,12 +104,15 @@ _Avoid_: forced restart, automatic relaunch
 - The **Backend Override** points the **Codex Desktop App** at the **PATH Backend**.
 - A **Manual Restart** is required before the **Codex Desktop App** inherits a changed **Backend Override**.
 - The **PATH Backend** depends on sibling ARM64 backend tools being available in the same directory or on `PATH`.
-- The **Conversion Script** installs a missing current-user **Store Package**, checks `winget upgrade` before updating an existing **Store Package**, creates a **Temporary Store Install Snapshot**, removes the current-user **Store Package**, then produces a **Converted App** with a **Dev Identity**.
-- If an existing **Converted App** already matches a current **Store Package**, the **Conversion Script** skips snapshot and conversion work and only removes the duplicate **Store Package**.
+- The **Conversion Script** installs a missing current-user **Store Package**, checks `winget upgrade` before updating an existing **Store Package**, creates a **Temporary Store Install Snapshot**, produces and installs a **Converted App Package** with a **Dev Identity**, then removes the current-user **Store Package**.
+- If an existing packaged **Converted App** already matches a current **Store Package**, the **Conversion Script** skips snapshot and conversion work and only removes the duplicate **Store Package**.
 - The **Converted App** uses the **Shared Codex Home**.
 - The **Converted App** uses a **Matching Electron Runtime**.
 - The **Converted App** requires a **Native Module Refresh**.
 - The **Converted App** still relies on the **Backend Override** for the active backend.
+- The **Converted App Package** keeps the runtime out of the conversion artifact directory.
+- The **Converted App Package** preserves the **Store Package Version**.
+- **Signing Certificate Trust** is required before Windows can install the locally signed **Converted App Package**.
 - A **Native Module Refresh** may require a **Prerequisite Prompt**.
 - The **Conversion Script** keeps **Conversion Artifacts**.
 - The **Conversion Script** prints a **Replacement Banner** before changing anything when it detects an existing current-user **Store Package**.
